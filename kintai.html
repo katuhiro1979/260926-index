@@ -71,12 +71,16 @@ const SPECIAL_STANDARD_HOURS = 7.5;
 const DEFAULT_SPECIAL_TYPES = [...Object.keys(DEFAULT_AUTO_FILL_TIMES), "中継"];
 const LEAVE_COUNT_START = "2026-01-01";
 
-const DEFAULT_SETTINGS = { standardHours: 8, paidLeaveTotal: 20 };
+const MEMO_FONT_MIN = 10;
+const MEMO_FONT_MAX = 28;
+// memoWidth / memoHeight は null のとき既定サイズ。メモ枠をドラッグで変えたら設定に保存する
+const DEFAULT_SETTINGS = { standardHours: 8, paidLeaveTotal: 20, memoWidth: null, memoHeight: null, memoFontSize: 14 };
 const STORAGE_KEY = "kintai-data-v1";
 const BACKUP_KEY = "kintai-backups-v1"; // 世代バックアップの一覧
 const CORRUPT_KEY = "kintai-data-v1-corrupt"; // 読み込みに失敗した保存データの退避先
 const BACKUP_KEEP_DAYS = 7;
 const BACKUP_MAX_COUNT = 30;
+const BACKUP_MAX_CHARS = 2000000; // バックアップ全体の文字数の上限(localStorageの容量を圧迫しないため)
 const NIGHT_NOTE = "泊"; // 「泊」の翌日は「明」になる勤務パターン
 const AFTER_NIGHT_NOTE = "明";
 const BULK_CLEAR = "__clear__"; // 一括入力で「空にする」を選んだときの値
@@ -224,6 +228,79 @@ const downloadJsonFile = (data, filename) => {
   URL.revokeObjectURL(url);
 };
 
+// ---- インポートデータの検証 ----
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const isValidTime = (v) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+const isValidDateKey = (k) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= daysInMonth(y, mo);
+};
+const cleanTime = (v) => (isValidTime(v) ? v : null);
+const cleanText = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+const cleanStringList = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.length <= 20) : null);
+
+// 読み込んだJSONを検証し、使える部分だけを取り出す。壊れた日は捨てて件数を返す。
+// 形式が根本的に違う(recordsもsettingsも無い等)ときは例外を投げる。
+const sanitizeImport = (parsed) => {
+  if (!isPlainObject(parsed)) throw new Error("JSONの形式が違います");
+  if (!isPlainObject(parsed.records) && !isPlainObject(parsed.settings)) {
+    throw new Error("出勤簿のデータ(records / settings)が見つかりません");
+  }
+  if ("records" in parsed && !isPlainObject(parsed.records)) throw new Error("recordsの形式が違います");
+  let dropped = 0;
+  const out = {};
+
+  const src = isPlainObject(parsed.settings) ? parsed.settings : {};
+  const settings = {};
+  if ([8, 7.5, 6.5, 6].includes(Number(src.standardHours))) settings.standardHours = Number(src.standardHours);
+  const pl = Number(src.paidLeaveTotal);
+  if (Number.isFinite(pl) && pl >= 0 && pl <= 99) settings.paidLeaveTotal = pl;
+  const fs = Number(src.memoFontSize);
+  if (Number.isFinite(fs) && fs >= MEMO_FONT_MIN && fs <= MEMO_FONT_MAX) settings.memoFontSize = fs;
+  ["memoWidth", "memoHeight"].forEach((k) => {
+    const n = Number(src[k]);
+    if (src[k] != null && Number.isFinite(n) && n >= 100 && n <= 5000) settings[k] = n;
+  });
+  out.settings = settings;
+
+  const records = {};
+  Object.keys(parsed.records || {}).forEach((k) => {
+    const r = parsed.records[k];
+    if (!isValidDateKey(k) || !isPlainObject(r)) { dropped += 1; return; }
+    records[k] = {
+      clockIn: cleanTime(r.clockIn),
+      clockOut: cleanTime(r.clockOut),
+      isLeave: r.isLeave === true,
+      note: cleanText(r.note, 20),
+      remark: cleanText(r.remark, 500),
+      otStart: cleanTime(r.otStart),
+      otEnd: cleanTime(r.otEnd),
+      locked: r.locked === true,
+    };
+  });
+  out.records = records;
+  out.memo = cleanText(parsed.memo, 100000);
+
+  const opts = cleanStringList(parsed.workTypeOptions);
+  if (opts && opts.length) out.workTypeOptions = opts.includes("") ? opts : ["", ...opts];
+  if (isPlainObject(parsed.autoFillTimes)) {
+    const af = {};
+    Object.keys(parsed.autoFillTimes).forEach((k) => {
+      const v = parsed.autoFillTimes[k];
+      if (Array.isArray(v) && v.length === 2 && isValidTime(v[0]) && isValidTime(v[1])) af[k] = [v[0], v[1]];
+      else dropped += 1;
+    });
+    out.autoFillTimes = af;
+  }
+  const ht = cleanStringList(parsed.holidayTypes);
+  if (ht) out.holidayTypes = ht;
+  const st = cleanStringList(parsed.specialTypes);
+  if (st) out.specialTypes = st;
+  return { data: out, dropped };
+};
+
 // YYYY-MM-DD の日付キーを delta 日ずらす(月をまたいでもよい)
 const shiftDateKey = (key, delta) => {
   const [y, m, d] = key.split("-").map(Number);
@@ -287,6 +364,7 @@ function KintaiApp() {
   const [backups, setBackups] = useState([]); // [{ at, day, reason, data }] 新しい順
   const [loadError, setLoadError] = useState(false); // 保存データの読み込みに失敗したら自動保存を止める
   const backupsRef = useRef([]);
+  const [backupWarn, setBackupWarn] = useState(false); // バックアップの保存に失敗した(容量不足など)
   const lastFileDataRef = useRef(""); // 最後にファイルへ書き込んだ内容(変わっていなければ書き込まない)
   const rootRef = useRef(null);
   const [saveState, setSaveState] = useState(""); // "" | "saving" | "saved" | "error"
@@ -312,12 +390,21 @@ function KintaiApp() {
     const limit = new Date();
     limit.setDate(limit.getDate() - BACKUP_KEEP_DAYS);
     const oldest = dateKey(limit.getFullYear(), limit.getMonth() + 1, limit.getDate());
-    const next = [{ at: `${day} ${hmNow()}`, day, reason, data }, ...list]
+    let next = [{ at: `${day} ${hmNow()}`, day, reason, data }, ...list]
       .filter((b) => b.day >= oldest)
       .slice(0, BACKUP_MAX_COUNT);
+    // 合計サイズが上限を超えるあいだ、古いものから削る(最新の1件は残す)
+    const totalChars = (arr) => arr.reduce((n, b) => n + b.data.length, 0);
+    while (next.length > 1 && totalChars(next) > BACKUP_MAX_CHARS) next = next.slice(0, -1);
+    // 保存に失敗したら(容量オーバー)、古いものから減らして再試行する
+    let saved = await storageAdapter.set(BACKUP_KEY, JSON.stringify(next));
+    while (!saved && next.length > 1) {
+      next = next.slice(0, -1);
+      saved = await storageAdapter.set(BACKUP_KEY, JSON.stringify(next));
+    }
     backupsRef.current = next;
     setBackups(next);
-    await storageAdapter.set(BACKUP_KEY, JSON.stringify(next));
+    setBackupWarn(!saved);
   };
 
   useEffect(() => {
@@ -598,6 +685,16 @@ function KintaiApp() {
     setTimeout(() => el.classList.remove("k-row-flash"), 1200);
   };
 
+  // 今月へ戻り、今日の行へ移動する
+  const goToday = () => {
+    if (view.y !== today.y || view.m !== today.m) {
+      setView({ y: today.y, m: today.m });
+      setBulkSel({});
+      setBulkMsg("");
+    }
+    setTimeout(() => jumpToDate(todayKey), 100);
+  };
+
   const onNoteChange = (key, val) => {
     const patch = { note: val, remark: val, isLeave: val === "有給" };
     if (val in autoFillTimes) {
@@ -616,6 +713,20 @@ function KintaiApp() {
     else updateRecord(key, { isLeave: false, note: "", remark: "" });
   };
 
+  // メモ枠のサイズ(ドラッグで変更)と文字サイズを設定へ保存する
+  const saveMemoSize = (e) => {
+    const w = Math.round(e.currentTarget.offsetWidth);
+    const h = Math.round(e.currentTarget.offsetHeight);
+    if (w === settings.memoWidth && h === settings.memoHeight) return;
+    setSettings((s) => ({ ...s, memoWidth: w, memoHeight: h }));
+  };
+  const changeMemoFont = (delta) => {
+    setSettings((s) => ({
+      ...s,
+      memoFontSize: Math.min(MEMO_FONT_MAX, Math.max(MEMO_FONT_MIN, (s.memoFontSize || 14) + delta)),
+    }));
+  };
+
   const toggleDayLock = (key) => {
     const current = records[key] || { locked: false };
     updateRecord(key, { locked: !current.locked });
@@ -625,20 +736,6 @@ function KintaiApp() {
     if (!leavePickDate) return;
     updateRecord(leavePickDate, { isLeave: true, clockIn: null, clockOut: null, note: "有給", remark: "有給" });
     setLeavePickDate("");
-  };
-
-  // 現在時刻を今日の出勤/退勤として記録する
-  const punch = (field) => {
-    const label = field === "clockIn" ? "出勤" : "退勤";
-    const rec = records[todayKey] || {};
-    if (rec.locked) { alert("今日の行はロック中です。"); return; }
-    if (rec.isLeave) { alert("今日は有給として登録されています。"); return; }
-    const now = hmNow();
-    if (rec[field] && !window.confirm(`すでに${label}が ${rec[field]} で入力されています。${now} に上書きしますか？`)) return;
-    updateRecord(todayKey, { [field]: now });
-    // 別の月を表示中なら今月へ戻し、入力結果が見えるように今日の行へ移動する
-    if (view.y !== today.y || view.m !== today.m) setView({ y: today.y, m: today.m });
-    setTimeout(() => jumpToDate(todayKey), 100);
   };
 
   // 破壊的な操作(リセット・インポート・復元)の直前に、現在の内容を退避する。
@@ -801,12 +898,14 @@ function KintaiApp() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const parsed = JSON.parse(ev.target.result);
-        if (!parsed || typeof parsed !== "object") throw new Error("invalid");
+        const { data, dropped } = sanitizeImport(JSON.parse(ev.target.result));
+        const days = Object.keys(data.records).length;
+        const note = dropped ? `\n(形式が正しくない ${dropped} 件は取り込みません)` : "";
+        if (!window.confirm(`${days}日分の記録を読み込みます。現在の内容は置き換えられます。${note}\nよろしいですか？`)) return;
         backupNow("インポート前");
-        applyData(parsed);
+        applyData(data);
       } catch (err) {
-        alert("ファイルの読み込みに失敗しました。正しいJSONファイルか確認してください。");
+        alert("ファイルの読み込みに失敗しました。正しいJSONファイルか確認してください。\n" + (err && err.message ? err.message : ""));
       }
     };
     reader.readAsText(file);
@@ -816,9 +915,9 @@ function KintaiApp() {
   const restoreBackup = (b) => {
     if (!window.confirm(`${b.at}(${b.reason})の状態に復元します。現在の内容は「復元前」として退避されます。よろしいですか？`)) return;
     try {
-      const parsed = JSON.parse(b.data);
+      const { data } = sanitizeImport(JSON.parse(b.data));
       backupNow("復元前");
-      applyData(parsed);
+      applyData(data);
     } catch (err) {
       alert("バックアップの復元に失敗しました。");
     }
@@ -1002,14 +1101,6 @@ function KintaiApp() {
           <div className="k-date">
             {today.y}年{today.m}月{today.d}日（{weekdayLabel(today.y, today.m, today.d)}）
           </div>
-          <div className="k-punch-row">
-            <button className="k-punch-btn k-punch-in" onClick={() => punch("clockIn")} title="現在時刻を今日の出勤に入力">
-              出勤{todayRec.clockIn ? ` ${todayRec.clockIn}` : ""}
-            </button>
-            <button className="k-punch-btn k-punch-out" onClick={() => punch("clockOut")} title="現在時刻を今日の退勤に入力">
-              退勤{todayRec.clockOut ? ` ${todayRec.clockOut}` : ""}
-            </button>
-          </div>
           <div className={`k-save-status ${saveState === "error" || loadError ? "k-save-status-error" : ""}`}>
             {saveStatusText}
           </div>
@@ -1058,6 +1149,7 @@ function KintaiApp() {
           <button className="k-nav" onClick={() => changeMonth(-1)}>‹</button>
           <h2>{view.y}年 {monthLabel(view.m)}</h2>
           <button className="k-nav" onClick={() => changeMonth(1)}>›</button>
+          <button className="k-today-btn" onClick={goToday} title="今日の行へ移動">今日</button>
         </div>
 
         {limitAlerts.length > 0 && (
@@ -1239,7 +1331,21 @@ function KintaiApp() {
                               onChange={(e) => updateRecord(key, { otEnd: e.target.value })} />
                           </div>
                           <div className={`k-ot-result ${rec.otStart && rec.otEnd ? "k-ot-manual" : ""}`}>
+                            {hasBasis && (
+                              <span className={`k-ot-badge ${rec.otStart && rec.otEnd ? "k-ot-badge-manual" : "k-ot-badge-auto"}`}>
+                                {rec.otStart && rec.otEnd ? "手動" : "自動"}
+                              </span>
+                            )}
                             {hasBasis ? minutesToLabel(otMinutes) : "―"}
+                            {(rec.otStart || rec.otEnd) && (
+                              <button
+                                className="k-mini-btn"
+                                disabled={dayLocked}
+                                onClick={() => updateRecord(key, { otStart: null, otEnd: null })}
+                                title="手動入力を消して自動計算に戻す"
+                                aria-label="手動入力を消して自動計算に戻す"
+                              >✕</button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -1279,12 +1385,8 @@ function KintaiApp() {
             <div><dt>有給取得日数</dt><dd>{monthLeaveDays}日</dd></div>
           </dl>
           <div className="k-limit-list">
-            {limitChecks.map((c) => <LimitMeter key={c.label} {...c} />)}
+            <LimitMeter {...limitChecks[0]} />
           </div>
-          <p className="k-limit-note">
-            36協定の一般的な上限（月45時間・年360時間、休日労働を含め月100時間未満）で判定しています。
-            「法定」の日の労働は法定休日労働として別に集計し、時間外には含めません。特別条項の上限には対応していません。
-          </p>
         </div>
         <div className="k-bottom-buttons">
           <button className="k-btn-secondary" onClick={() => setShowLeave(true)}>🗓 有給休暇</button>
@@ -1339,14 +1441,26 @@ function KintaiApp() {
 
       {showMemo && (
         <div className="k-modal-overlay" onClick={() => setShowMemo(false)}>
-          <div className="k-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="k-modal k-modal-memo" onClick={(e) => e.stopPropagation()}>
             <div className="k-modal-head">
               <h3>メモ・使用方法</h3>
+              <div className="k-memo-font">
+                <button className="k-mini-btn" onClick={() => changeMemoFont(-1)} disabled={(settings.memoFontSize || 14) <= MEMO_FONT_MIN} title="文字を小さく" aria-label="文字を小さく">A−</button>
+                <span>{settings.memoFontSize || 14}px</span>
+                <button className="k-mini-btn" onClick={() => changeMemoFont(1)} disabled={(settings.memoFontSize || 14) >= MEMO_FONT_MAX} title="文字を大きく" aria-label="文字を大きく">A＋</button>
+              </div>
               <button className="k-icon-btn" onClick={() => setShowMemo(false)}>✕</button>
             </div>
             <p className="k-memo-hint">出勤簿の使い方や注意点など、自由に書き留めておけます。</p>
             <textarea
               className="k-memo-textarea"
+              style={{
+                fontSize: settings.memoFontSize || 14,
+                ...(settings.memoWidth ? { width: settings.memoWidth } : {}),
+                ...(settings.memoHeight ? { height: settings.memoHeight } : {}),
+              }}
+              onMouseUp={saveMemoSize}
+              onTouchEnd={saveMemoSize}
               value={memo}
               onChange={(e) => setMemo(e.target.value)}
               placeholder="ここにメモを入力…"
@@ -1392,7 +1506,10 @@ function KintaiApp() {
             </div>
 
             <div className="k-backup-zone">
-              <p className="k-memo-hint">バックアップ(直近{BACKUP_KEEP_DAYS}日分・このブラウザ内に保存)</p>
+              <p className="k-memo-hint">バックアップ(直近{BACKUP_KEEP_DAYS}日分・このブラウザ内に保存・約{Math.round(backups.reduce((n, b) => n + b.data.length, 0) / 1024)}KB)</p>
+              {backupWarn && (
+                <p className="k-memo-hint k-backup-warn">⚠ バックアップを保存できませんでした(ブラウザの保存容量が不足している可能性があります)。「JSON保存」で手動バックアップを取ってください。</p>
+              )}
               {backups.length === 0 ? (
                 <p className="k-memo-hint">まだありません。</p>
               ) : (
@@ -1475,8 +1592,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(<KintaiApp />);
 /* 時間外の上限表示 */
 .k-limit-alerts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .k-limit-alert { border-radius: 6px; padding: 7px 12px; font-size: 14px; font-weight: 700; border: 1px solid; }
-.k-limit-alert-warn { background: #fff6dd; border-color: #d9a441; color: #7a5a10; }
-.k-limit-alert-over { background: #f9e3df; border-color: var(--hanko); color: #8a3a2c; }
 .k-limit-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .k-limit-head { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink-soft); margin-bottom: 4px; }
 .k-limit-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--ink); }
@@ -1487,7 +1602,8 @@ ReactDOM.createRoot(document.getElementById("root")).render(<KintaiApp />);
 .k-limit-fill.k-limit-ok { background: var(--indigo); }
 .k-limit-fill.k-limit-warn { background: #d9a441; }
 .k-limit-fill.k-limit-over { background: var(--hanko); }
-.k-limit-note { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin: 10px 0 0; }
+.k-limit-alert-warn { background: #fff6dd; border-color: #d9a441; color: #7a5a10; }
+.k-limit-alert-over { background: #f9e3df; border-color: var(--hanko); color: #8a3a2c; }
 
 /* 一括入力 */
 .k-bulk-bar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
@@ -1512,12 +1628,6 @@ tr.k-row-selected td { background: #cfe3f1; }
 .k-suggest { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 10px; background: var(--white); border: 1px solid var(--indigo); border-radius: 10px; padding: 10px 14px; box-shadow: 0 4px 16px rgba(44,58,69,0.25); font-size: 14px; }
 .k-suggest .k-btn-secondary-outline { flex: none; padding: 8px 12px; font-size: 14px; }
 
-.k-punch-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
-.k-punch-btn { border: none; border-radius: 6px; padding: 6px 16px; font-size: 14px; font-weight: 700; color: var(--white); cursor: pointer; font-family: inherit; }
-.k-punch-in { background: var(--indigo); }
-.k-punch-in:hover { background: var(--indigo-deep); }
-.k-punch-out { background: var(--hanko); }
-.k-punch-out:hover { background: #874a3d; }
 .k-save-status { font-size: 12px; color: var(--ink-soft); margin-top: 6px; min-height: 1.4em; }
 .k-save-status-error { color: var(--hanko); font-weight: 700; }
 
@@ -1591,6 +1701,11 @@ tr.k-leave-row td { background: #f2e6e2; }
 .k-ot-range-inputs { display: flex; align-items: center; gap: 2px; }
 .k-ot-time { width: 96px !important; }
 .k-ot-result { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+.k-ot-badge { display: inline-block; font-size: 10px; font-weight: 700; border-radius: 3px; padding: 0 5px; margin-right: 5px; border: 1px solid; }
+.k-ot-badge-auto { color: var(--ink-soft); border-color: var(--line); background: var(--white); }
+.k-ot-badge-manual { color: var(--white); border-color: var(--indigo); background: var(--indigo); }
+.k-today-btn { background: var(--white); border: 1px solid var(--indigo); color: var(--indigo-deep); border-radius: 6px; height: 28px; padding: 0 10px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
+.k-today-btn:hover { background: var(--paper); }
 .k-ot-result.k-ot-manual { color: var(--indigo-deep); font-weight: 600; }
 /* td自体をflexにするとcolSpanが効かず列がずれるため、内側のdivで並べる */
 .k-leave-inner { display: flex; align-items: center; gap: 6px; }
@@ -1619,9 +1734,15 @@ tr.k-leave-row td { background: #f2e6e2; }
 .k-leave-dates li:last-child { border-bottom: none; }
 .k-leave-seq { color: var(--ink-soft); font-size: 13px; margin-left: 6px; font-family: 'JetBrains Mono', monospace; }
 
+.k-modal-memo { width: auto; min-width: 360px; max-width: 94vw; }
+.k-modal-memo .k-modal-head { gap: 10px; }
+.k-modal-memo .k-modal-head h3 { margin-right: auto; }
+.k-memo-font { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-soft); font-family: 'JetBrains Mono', monospace; }
+.k-memo-font .k-mini-btn { border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 13px; font-weight: 700; }
+.k-memo-font .k-mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .k-memo-hint { font-size: 13px; color: var(--ink-soft); margin: 0 0 10px; }
 .k-memo-textarea {
-  width: 100%; min-height: 220px; resize: vertical; font-family: 'Zen Kaku Gothic New', sans-serif;
+  display: block; width: 100%; min-height: 220px; min-width: 280px; max-width: 86vw; resize: both; font-family: 'Zen Kaku Gothic New', sans-serif;
   font-size: 14px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--white); color: var(--ink);
 }
 
@@ -1644,6 +1765,7 @@ tr.k-leave-row td { background: #f2e6e2; }
 .k-io-zone .k-btn-secondary-outline { display: flex; align-items: center; justify-content: center; gap: 6px; }
 
 .k-backup-zone { border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; }
+.k-backup-warn { color: var(--hanko); font-weight: 700; }
 .k-backup-zone .k-leave-dates { margin-top: 0; }
 
 .k-danger-zone { border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; }
@@ -1657,29 +1779,26 @@ tr.k-leave-row td { background: #f2e6e2; }
 
 /* ---------- mobile ---------- */
 @media (max-width: 640px) {
-  .kintai-root { padding: 10px; border-radius: 0; font-size: 12px; line-height: 1.4; }
+  .kintai-root { padding: 10px; border-radius: 0; font-size: 14px; line-height: 1.45; }
   .k-header { flex-direction: column; align-items: flex-start; gap: 6px; padding-bottom: 8px; margin-bottom: 12px; }
   .k-header-right { text-align: left; width: 100%; }
-  .k-eyebrow { font-size: 10px; margin-bottom: 2px; }
+  .k-eyebrow { font-size: 12px; margin-bottom: 2px; }
   .k-header h1 { font-size: 18px; }
-  .k-header-export { font-size: 10px; margin-bottom: 3px; padding: 3px 8px; }
+  .k-header-export { font-size: 12px; margin-bottom: 3px; padding: 3px 8px; }
   .k-header-btn-row { flex-wrap: wrap; justify-content: flex-start; }
   .k-clock { font-size: 19px; }
-  .k-date { font-size: 12px; margin-top: 3px; }
-  .k-limit-alert { font-size: 11px; padding: 5px 8px; }
-  .k-limit-head { font-size: 11px; }
-  .k-limit-note { font-size: 10px; }
-  .k-bulk-toggle { font-size: 12px; padding: 4px 10px; }
+  .k-date { font-size: 14px; margin-top: 3px; }
+  .k-limit-alert { font-size: 13px; padding: 5px 8px; }
+  .k-limit-head { font-size: 13px; }
+  .k-bulk-toggle { font-size: 14px; padding: 4px 10px; }
   .k-bulk-panel { padding: 8px 10px; gap: 8px; }
-  .k-bulk-chip, .k-bulk-count, .k-bulk-check, .k-bulk-msg { font-size: 11px; }
-  .k-suggest { width: 92vw; flex-wrap: wrap; font-size: 12px; bottom: 10px; }
-  .k-punch-row { justify-content: flex-start; margin-top: 6px; }
-  .k-punch-btn { font-size: 12px; padding: 5px 12px; }
-  .k-save-status { font-size: 10px; margin-top: 4px; }
+  .k-bulk-chip, .k-bulk-count, .k-bulk-check, .k-bulk-msg { font-size: 13px; }
+  .k-suggest { width: 92vw; flex-wrap: wrap; font-size: 14px; bottom: 10px; }
+  .k-save-status { font-size: 12px; margin-top: 4px; }
 
-  .k-import-banner { flex-direction: column; align-items: flex-start; font-size: 11px; padding: 10px 12px; margin-bottom: 12px; }
+  .k-import-banner { flex-direction: column; align-items: flex-start; font-size: 13px; padding: 10px 12px; margin-bottom: 12px; }
   .k-import-banner-buttons { width: 100%; }
-  .k-import-banner-buttons button { flex: 1; font-size: 11px; padding: 6px 8px; }
+  .k-import-banner-buttons button { flex: 1; font-size: 13px; padding: 6px 8px; }
 
   .k-ledger { padding: 8px 6px 10px; margin-bottom: 10px; }
   .k-ledger-head {
@@ -1688,15 +1807,14 @@ tr.k-leave-row td { background: #f2e6e2; }
   }
   .k-mini-cal { margin-bottom: 10px; }
   .k-mini-cal-weekdays, .k-mini-cal-grid { gap: 3px; }
-  .k-mini-cal-wd { font-size: 10px; }
-  .k-mini-cal-day { font-size: 11px; border-radius: 5px; min-height: 38px; }
-  .k-mini-cal-note { font-size: 8px; }
+  .k-mini-cal-wd { font-size: 12px; }
+  .k-mini-cal-day { font-size: 13px; border-radius: 5px; min-height: 44px; }
+  .k-mini-cal-note { font-size: 10px; }
   .k-ledger-head h2 { font-size: 15px; min-width: 0; }
-  .k-nav { width: 24px; height: 24px; }
 
   /* ---- table -> stacked cards ---- */
   .k-table-wrap { max-height: none; overflow: visible; }
-  .k-table { display: block; width: 100%; min-width: 0; font-size: 12px; }
+  .k-table { display: block; width: 100%; min-width: 0; font-size: 14px; }
   .k-table thead { display: none; }
   .k-table tbody { display: block; }
   .k-table tr {
@@ -1717,7 +1835,7 @@ tr.k-leave-row td { background: #f2e6e2; }
   .k-table tr { box-shadow: 0 1px 2px rgba(44,58,69,0.08); background: var(--white); }
   .k-table td::before {
     content: attr(data-label); flex: 0 0 52px;
-    font-weight: 700; color: var(--ink-soft); font-size: 10px;
+    font-weight: 700; color: var(--ink-soft); font-size: 12px;
   }
   .k-table td[data-label="出勤"]::before, .k-table td[data-label="退勤"]::before {
     flex: 0 0 auto; margin-right: 2px;
@@ -1725,31 +1843,39 @@ tr.k-leave-row td { background: #f2e6e2; }
   .k-table td > * { min-width: 0; }
   .k-col-work, .k-col-date, .k-col-note, .k-col-remark, .k-col-ot { width: 100%; min-width: 0; }
 
-  .k-day-num { font-size: 13px; }
-  .k-day-wd { font-size: 11px; }
-  .k-lock-btn { font-size: 9px; padding: 1px 5px; margin-left: auto; }
-  .k-note-select { font-size: 12px; width: auto; flex: 1; padding: 2px 3px; }
-  .k-remark-input { font-size: 12px; padding: 2px 5px; }
-  .k-table input[type="time"], .k-table input[type="date"] { font-size: 12px; width: 76px; padding: 1px 3px; }
-  .k-ot-time { width: 76px !important; }
+  .k-day-num { font-size: 15px; }
+  .k-day-wd { font-size: 13px; }
+  .k-lock-btn { font-size: 11px; padding: 4px 8px; margin-left: auto; }
+  /* タップしやすいよう入力欄の高さを確保(16px以上でiOSの自動拡大も防ぐ) */
+  .k-note-select { font-size: 16px; width: auto; flex: 1; min-height: 40px; padding: 6px 6px; }
+  .k-remark-input { font-size: 16px; min-height: 40px; padding: 6px 8px; }
+  .k-table input[type="time"], .k-table input[type="date"] { font-size: 16px; width: 100px; min-height: 40px; padding: 4px 6px; }
+  .k-ot-time { width: 100px !important; }
+  .k-lock-btn { min-height: 32px; }
+  .k-mini-btn { min-width: 32px; min-height: 32px; }
+  .k-nav { min-width: 36px; min-height: 36px; }
+  .k-today-btn { height: 36px; }
+  .k-bulk-checkbox { width: 22px; height: 22px; }
   .k-ot-range { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
   .k-ot-range-inputs { flex-wrap: wrap; gap: 1px; }
   .k-ot-result { margin-top: 0; margin-left: auto; text-align: right; }
-  .k-ot-cell, .k-ot-result { font-size: 11px; }
+  .k-ot-cell, .k-ot-result { font-size: 13px; }
 
   .k-card { padding: 10px; }
-  .k-card h3 { font-size: 13px; margin: 0 0 6px; }
-  .k-stat-list > div { font-size: 11px; padding: 3px 0; }
+  .k-card h3 { font-size: 15px; margin: 0 0 6px; }
+  .k-stat-list > div { font-size: 13px; padding: 3px 0; }
   .k-bottom { gap: 6px; }
   .k-bottom-buttons { flex-wrap: wrap; gap: 6px; }
-  .k-bottom-buttons button { flex: 1 1 45%; font-size: 11px; padding: 6px 8px; }
+  .k-bottom-buttons button { flex: 1 1 45%; font-size: 13px; padding: 10px 8px; }
 
   .k-modal { width: 92vw; padding: 14px; }
+  .k-modal-memo { min-width: 0; }
+  .k-memo-textarea { min-width: 0; max-width: 100%; }
   .k-modal-head { margin-bottom: 8px; }
   .k-modal-head h3 { font-size: 14px; }
-  .k-field { margin-bottom: 10px; font-size: 12px; }
-  .k-field input, .k-field select { font-size: 13px; padding: 5px 6px; }
-  .k-leave-dates li { font-size: 11px; padding: 3px 2px; }
+  .k-field { margin-bottom: 10px; font-size: 14px; }
+  .k-field input, .k-field select { font-size: 15px; padding: 5px 6px; }
+  .k-leave-dates li { font-size: 13px; padding: 3px 2px; }
   .k-leave-add { gap: 4px; margin-top: 8px; }
 }
 </style>
