@@ -5,38 +5,109 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自作アプリ一覧</title>
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --text:#222; --sub:#666; --accent:#2f6fed; --border:#e1e4e8; }
+  :root {
+    --bg:#f4f3ff; --text:#17172b; --sub:#6b6b85;
+    --glass:rgba(255,255,255,.62); --glass-border:rgba(255,255,255,.85);
+    --line:rgba(23,23,43,.08); --accent:#6a5cff; --accent2:#00c2ff;
+    --shadow:0 8px 32px rgba(70,60,160,.10);
+    --blob1:#c7bfff; --blob2:#a8ecff; --blob3:#ffd3e8;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#16181c; --card:#20242a; --text:#e8eaed; --sub:#9aa0a6; --accent:#6c9bff; --border:#33383f; }
+    :root {
+      --bg:#0d0d18; --text:#f1f1fa; --sub:#9a9ab5;
+      --glass:rgba(30,30,50,.55); --glass-border:rgba(255,255,255,.08);
+      --line:rgba(255,255,255,.08); --accent:#8f85ff; --accent2:#3cd3ff;
+      --shadow:0 8px 32px rgba(0,0,0,.45);
+      --blob1:#3b2f9e; --blob2:#0a5f80; --blob3:#6b2a55;
+    }
   }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:"Yu Gothic UI","Meiryo",sans-serif; background:var(--bg); color:var(--text); }
-  header { padding:24px 16px 8px; max-width:960px; margin:0 auto; }
-  h1 { margin:0 0 4px; font-size:1.6rem; }
-  .count { color:var(--sub); font-size:.9rem; }
-  .tools { max-width:960px; margin:0 auto; padding:8px 16px; display:flex; gap:8px; flex-wrap:wrap; }
-  .tools input, .tools select { padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text); font-size:1rem; }
-  .tools input { flex:1; min-width:180px; }
-  main { max-width:960px; margin:0 auto; padding:8px 16px 32px; display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
-  .card { display:block; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; text-decoration:none; color:inherit; transition:transform .1s, box-shadow .1s; }
-  .card:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.12); }
-  .card h2 { margin:0 0 6px; font-size:1.1rem; color:var(--accent); }
-  .card p { margin:0 0 10px; font-size:.9rem; color:var(--sub); }
-  .meta { display:flex; gap:6px; flex-wrap:wrap; font-size:.75rem; }
-  .tag { background:var(--bg); border:1px solid var(--border); border-radius:999px; padding:2px 8px; }
-  .empty { grid-column:1/-1; text-align:center; color:var(--sub); padding:40px 0; }
+  html { scroll-behavior:smooth; }
+  body {
+    margin:0; min-height:100vh; color:var(--text); background:var(--bg);
+    font-family:"Inter","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* オーロラ風の背景 */
+  .aurora { position:fixed; inset:0; z-index:-1; overflow:hidden; }
+  .aurora i { position:absolute; border-radius:50%; filter:blur(90px); opacity:.65; }
+  .aurora i:nth-child(1){ width:46vw; height:46vw; background:var(--blob1); top:-12vw; left:-8vw; animation:float 18s ease-in-out infinite; }
+  .aurora i:nth-child(2){ width:38vw; height:38vw; background:var(--blob2); top:10vw; right:-10vw; animation:float 22s ease-in-out infinite reverse; }
+  .aurora i:nth-child(3){ width:34vw; height:34vw; background:var(--blob3); bottom:-12vw; left:30vw; animation:float 26s ease-in-out infinite; }
+  @keyframes float { 50% { transform:translate(4vw,3vw) scale(1.08); } }
+
+  .wrap { max-width:1040px; margin:0 auto; padding:0 20px; }
+  header { padding:64px 0 24px; }
+  .eyebrow { display:inline-block; font-size:.78rem; font-weight:600; letter-spacing:.08em; color:var(--accent);
+    padding:5px 12px; border-radius:999px; background:var(--glass); border:1px solid var(--glass-border); backdrop-filter:blur(12px); }
+  h1 { margin:16px 0 8px; font-size:clamp(2.2rem,6vw,3.6rem); line-height:1.1; letter-spacing:-.03em; font-weight:800;
+    background:linear-gradient(120deg,var(--text) 30%,var(--accent) 70%,var(--accent2));
+    -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .count { color:var(--sub); font-size:.95rem; }
+
+  .tools { display:flex; flex-direction:column; gap:14px; padding-bottom:24px; }
+  .search { position:relative; }
+  .search svg { position:absolute; left:16px; top:50%; transform:translateY(-50%); width:18px; height:18px; color:var(--sub); }
+  .search input {
+    width:100%; padding:15px 18px 15px 46px; font-size:1rem; color:var(--text); font-family:inherit;
+    background:var(--glass); border:1px solid var(--glass-border); border-radius:16px;
+    backdrop-filter:blur(16px); box-shadow:var(--shadow); outline:none; transition:box-shadow .2s, border-color .2s;
+  }
+  .search input:focus { border-color:var(--accent); box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip {
+    padding:8px 16px; font-size:.88rem; font-family:inherit; font-weight:600; cursor:pointer; color:var(--sub);
+    background:var(--glass); border:1px solid var(--glass-border); border-radius:999px; backdrop-filter:blur(12px);
+    transition:all .18s;
+  }
+  .chip:hover { color:var(--text); transform:translateY(-1px); }
+  .chip.on { color:#fff; border-color:transparent; background:linear-gradient(120deg,var(--accent),var(--accent2)); box-shadow:0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent); }
+
+  /* ベントーグリッド */
+  main { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; padding-bottom:64px; }
+  .card {
+    position:relative; display:flex; flex-direction:column; gap:10px; min-height:170px; padding:22px;
+    text-decoration:none; color:inherit; overflow:hidden;
+    background:var(--glass); border:1px solid var(--glass-border); border-radius:24px;
+    backdrop-filter:blur(18px); box-shadow:var(--shadow);
+    transition:transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s;
+    animation:rise .5s both;
+  }
+  .card::before { content:""; position:absolute; inset:0; opacity:0; transition:opacity .25s;
+    background:radial-gradient(400px circle at var(--mx,50%) var(--my,0%), color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%); }
+  .card:hover { transform:translateY(-6px); box-shadow:0 18px 44px rgba(70,60,160,.22); }
+  .card:hover::before { opacity:1; }
+  .card > * { position:relative; }
+  .icon { width:44px; height:44px; border-radius:14px; display:grid; place-items:center; font-weight:800; color:#fff; font-size:1.15rem;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); box-shadow:0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .card h2 { margin:4px 0 0; font-size:1.2rem; letter-spacing:-.01em; }
+  .card p { margin:0; font-size:.9rem; line-height:1.55; color:var(--sub); flex:1; }
+  .meta { display:flex; align-items:center; gap:8px; font-size:.75rem; color:var(--sub); }
+  .tag { padding:3px 10px; border-radius:999px; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:600; }
+  .arrow { margin-left:auto; font-size:1.1rem; transition:transform .25s; }
+  .card:hover .arrow { transform:translate(3px,-3px); color:var(--accent); }
+  .empty { grid-column:1/-1; text-align:center; color:var(--sub); padding:60px 0; }
+  @keyframes rise { from { opacity:0; transform:translateY(14px); } }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>自作アプリ一覧</h1>
-  <div class="count" id="count"></div>
-</header>
-<div class="tools">
-  <input id="q" type="search" placeholder="アプリ名・説明で検索">
-  <select id="cat"><option value="">すべてのカテゴリ</option></select>
+<div class="aurora"><i></i><i></i><i></i></div>
+<div class="wrap">
+  <header>
+    <span class="eyebrow">MY APPS</span>
+    <h1>自作アプリ一覧</h1>
+    <div class="count" id="count"></div>
+  </header>
+  <div class="tools">
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="アプリ名・説明で検索">
+    </label>
+    <div class="chips" id="chips"></div>
+  </div>
+  <main id="list"></main>
 </div>
-<main id="list"></main>
 
 <script>
 // ===== アプリ登録欄 =====
@@ -53,31 +124,46 @@ const apps = [
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-// カテゴリの選択肢を作る
-[...new Set(apps.map(a => a.category).filter(Boolean))].forEach(c => {
-  $("cat").insertAdjacentHTML("beforeend", `<option>${esc(c)}</option>`);
+// カテゴリのチップを作る（先頭は「すべて」）
+let cat = "";
+const cats = ["", ...new Set(apps.map(a => a.category).filter(Boolean))];
+$("chips").innerHTML = cats.map(c => `<button class="chip${c === "" ? " on" : ""}" data-c="${esc(c)}">${c || "すべて"}</button>`).join("");
+$("chips").addEventListener("click", e => {
+  const b = e.target.closest(".chip");
+  if (!b) return;
+  cat = b.dataset.c;
+  document.querySelectorAll(".chip").forEach(x => x.classList.toggle("on", x === b));
+  render();
 });
 
 function render() {
   const q = $("q").value.trim().toLowerCase();
-  const cat = $("cat").value;
   const hit = apps.filter(a =>
     (!cat || a.category === cat) &&
     (!q || (a.name + " " + (a.desc || "")).toLowerCase().includes(q)));
   $("count").textContent = `全${apps.length}件` + (hit.length !== apps.length ? `（表示${hit.length}件）` : "");
-  $("list").innerHTML = hit.length ? hit.map(a => `
-    <a class="card" href="${esc(a.path)}">
+  $("list").innerHTML = hit.length ? hit.map((a, i) => `
+    <a class="card" href="${esc(a.path)}" style="animation-delay:${i * 60}ms">
+      <div class="icon">${esc([...a.name][0])}</div>
       <h2>${esc(a.name)}</h2>
       <p>${esc(a.desc)}</p>
       <div class="meta">
         ${a.category ? `<span class="tag">${esc(a.category)}</span>` : ""}
-        ${a.updated ? `<span class="tag">更新 ${esc(a.updated)}</span>` : ""}
+        ${a.updated ? `<span>更新 ${esc(a.updated)}</span>` : ""}
+        <span class="arrow">↗</span>
       </div>
     </a>`).join("")
     : `<div class="empty">${apps.length ? "該当するアプリがありません" : "まだアプリが登録されていません。index.html の apps 配列に追加してください。"}</div>`;
 }
 $("q").addEventListener("input", render);
-$("cat").addEventListener("change", render);
+// カーソル位置に追従する光
+$("list").addEventListener("pointermove", e => {
+  const c = e.target.closest(".card");
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  c.style.setProperty("--mx", (e.clientX - r.left) + "px");
+  c.style.setProperty("--my", (e.clientY - r.top) + "px");
+});
 render();
 </script>
 </body>
