@@ -176,6 +176,54 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
   #tagChips:empty{display:none;}
   .soon-setting{display:flex;align-items:center;gap:6px;}
   .scan-box{padding-top:0;}
+
+  /* 画像・表示切替・修理中 */
+  .badge.repair{background:#e7e4da;color:var(--ink-soft);}
+  .thumb{display:block;width:72px;height:72px;object-fit:contain;background:#fff;border:1px solid var(--rule);margin-bottom:6px;}
+  .thumb.dim{opacity:.45;}
+  .thumb-ph{display:none;}
+  .img-field{grid-column:1/-1;font-size:12.5px;color:var(--ink-soft);font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;}
+  ul.item-list.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;padding:14px;}
+  ul.item-list.grid li.item{grid-template-columns:1fr;gap:6px;border:1px solid var(--rule);background:#fff;padding:0 0 12px;align-content:start;}
+  ul.item-list.grid li.item:first-child{border-top:1px solid var(--rule);}
+  ul.item-list.grid li.item > *:not(.code){padding:0 12px;}
+  ul.item-list.grid .code{order:-1;padding:0;}
+  ul.item-list.grid .code span{display:block;padding:6px 12px 0;}
+  ul.item-list.grid .thumb,ul.item-list.grid .thumb-ph{display:block;width:100%;height:auto;aspect-ratio:4/3;margin:0;border:none;border-bottom:1px solid var(--rule);}
+  ul.item-list.grid .thumb-ph{background:var(--paper);}
+  ul.item-list.grid .actions{justify-content:flex-start;}
+  ul.item-list.grid .loan-form,ul.item-list.grid .edit-item-form{grid-template-columns:1fr;}
+
+  .quiet{border-color:var(--rule);color:var(--ink-soft);}
+
+  /* ダークモード */
+  @media (prefers-color-scheme: dark){
+    :root{
+      color-scheme:dark;
+      --paper:#1c1e19; --ink:#e8e6da; --ink-soft:#a5a698; --rule:#3d4036; --card:#24261f;
+      --stamp-red:#e27a6c; --stamp-red-bg:#3a2320; --sage:#98b894; --sage-bg:#26312a;
+      --amber:#e0b35c; --amber-bg:#3a3020; --blue:#8fb0dc; --blue-bg:#232c38;
+    }
+    input,select,.tag-chip,ul.item-list.grid li.item{background:var(--paper);}
+    .tag-chip.active{background:var(--ink);}
+  }
+
+  /* 印刷（画面がダークでも紙は明るい配色にする） */
+  @media print{
+    :root{
+      color-scheme:light;
+      --paper:#fff; --ink:#000; --ink-soft:#444; --rule:#bbb; --card:#fff;
+      --stamp-red:#a8382b; --stamp-red-bg:#f4e3df; --sage:#526b4e; --sage-bg:#e6ebe0;
+      --amber:#a1731f; --amber-bg:#f2e6cf; --blue:#38587f; --blue-bg:#e2e8ee;
+    }
+    body{padding:0;}
+    .wrap{max-width:none;padding:0;}
+    button,.notice,.panel-head,.filters,.scan-box,.actions,details.panel,footer,.panel:has(#addForm),
+    .loan-form,.edit-item-form,.edit-loan-form{display:none !important;}
+    .panel{border:none;box-shadow:none;}
+    li.item{break-inside:avoid;}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  }
 </style>
 </head>
 <body>
@@ -193,6 +241,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
   </header>
 
   <div class="notice sans" id="notice" role="alert"></div>
+  <datalist id="borrowerList"></datalist>
 
   <div class="stats sans">
     <div class="stat"><div class="num" id="statTotal">0</div><div class="label">登録品目</div></div>
@@ -214,6 +263,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
         <input type="text" id="newCategory" placeholder="分類（例：機材）">
         <input type="text" id="newTags" placeholder="タグ（カンマ区切り）">
         <button type="submit">登録する</button>
+        <label class="img-field">画像（任意・自動で縮小されます）: <input type="file" id="newImage" accept="image/*"></label>
       </form>
     </div>
   </div>
@@ -226,6 +276,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
         <button data-tab="loaned">貸出中</button>
         <button data-tab="soon">まもなく期限</button>
         <button data-tab="overdue">延滞</button>
+        <button data-tab="repair">修理中</button>
         <button data-tab="trash">ごみ箱</button>
       </div>
     </div>
@@ -239,6 +290,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       </select>
       <label class="soon-setting">まもなく期限: <input type="number" id="soonDaysInput" min="0" max="30" style="width:56px;padding:5px 6px;"> 日前</label>
       <button type="button" class="ghost small" id="scanBtn">QRを読み取る</button>
+      <button type="button" class="ghost small" id="viewToggleBtn"></button>
     </div>
     <div class="scan-box sans" id="scanBox" style="display:none;">
       <video id="scanVideo" playsinline muted style="max-width:320px;width:100%;background:#000;"></video>
@@ -257,7 +309,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
         <input type="file" id="dataImportFileFallback" accept=".json,application/json" style="display:none;">
       </div>
       <div class="csv-hint sans" id="dataHint">
-        登録した品目・貸出履歴・タグをまとめてJSONファイルとして書き出せます。別のブラウザや端末に移す場合や、バックアップとして保存する場合にお使いください。インポートすると、現在この画面に表示されている品目データがすべて置き換わります。対応するブラウザでは、保存先・読み込み元のフォルダを選ぶダイアログが表示され、前回選んだフォルダが次回も開きます（対応していない場合は通常のダウンロード・ファイル選択になります）。
+        登録した品目・貸出履歴・タグ・CSVから読み込んだ選択肢（借用者など）をまとめてJSONファイルとして書き出せます。別のブラウザや端末に移す場合や、バックアップとして保存する場合にお使いください。インポートすると、現在この画面に表示されている品目データがすべて置き換わります（ファイルに選択肢が含まれている場合は選択肢も置き換わります）。対応するブラウザでは、保存先・読み込み元のフォルダを選ぶダイアログが表示され、前回選んだフォルダが次回も開きます（対応していない場合は通常のダウンロード・ファイル選択になります）。
       </div>
       <div class="csv-status sans" id="dataStatus"></div>
     </div>
@@ -307,12 +359,20 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
   const BACKUP_KEY = 'lending-ledger-last-backup';
   let items = [];
   let currentTab = 'all';
-  let openLoanFormId = null;
-  let openQrId = null;
-  let openHistoryId = null;
-  let editLoanFormId = null;
-  let editItemId = null;
+  // 開いているパネル（type: loan / editLoan / editItem / qr / history）は常に1つだけ
+  let panel = { type:null, id:null };
+  function isPanel(type, it){ return !it.deleted && panel.type===type && panel.id===it.id; }
+  function closePanel(){ panel = { type:null, id:null }; }
+  function togglePanel(type, id){
+    panel = (panel.type===type && panel.id===id) ? { type:null, id:null } : { type, id };
+    render();
+    const f = document.querySelector('#itemList form');
+    if(f){ const i = f.querySelector('input:not([type=file]),select'); if(i) i.focus(); }
+  }
   let activeTagFilter = null;
+  const VIEW_KEY = 'lending-ledger-view';
+  let viewMode = 'list';
+  try{ if(localStorage.getItem(VIEW_KEY)==='grid') viewMode = 'grid'; }catch(e){}
   let importedOptions = { names: [], categories: [], tags: [], borrowers: [], raw: null };
 
   // ローカル（日本時間）基準でYYYY-MM-DDを作る（toISOStringはUTCのため日付がずれる）
@@ -330,6 +390,17 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     clearTimeout(noticeTimer);
     if(!sticky) noticeTimer = setTimeout(()=>{ el.style.display='none'; }, 5000);
   }
+  // 元に戻すボタン付きの通知（10秒間表示）
+  function showUndoNotice(msg, undoFn){
+    showNotice(msg, false, true);
+    const el = document.getElementById('notice');
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'small ghost'; b.style.marginLeft = '12px'; b.textContent = '元に戻す';
+    b.onclick = ()=>{ undoFn(); el.style.display = 'none'; };
+    el.appendChild(b);
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(()=>{ el.style.display='none'; }, 10000);
+  }
   function fmtDate(iso){ if(!iso) return ''; const d = new Date(iso+'T00:00:00'); return d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}); }
 
   function daysUntil(iso){
@@ -344,10 +415,25 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
   try{ const v = parseInt(localStorage.getItem(SOON_KEY),10); if(!isNaN(v) && v>=0 && v<=30) soonDays = v; }catch(e){}
   function isDueSoon(it){ return it.status==='loaned' && it.dueDate && daysUntil(it.dueDate) >= 0 && daysUntil(it.dueDate) <= soonDays; }
 
+  function newId(){
+    if(window.crypto && crypto.randomUUID) return 'it_'+crypto.randomUUID();
+    return 'it_'+Date.now()+'_'+Math.random().toString(36).slice(2,10);
+  }
+
+  const COUNTER_KEY = 'lending-ledger-code-counter';
+  function readCounter(){ try{ return parseInt(localStorage.getItem(COUNTER_KEY),10) || 0; }catch(e){ return 0; } }
+  function maxCodeNumber(list){
+    let max = 0;
+    list.forEach(it=>{ const n = parseInt((it.code||'').replace(/\D/g,''),10); if(!isNaN(n)&&n>max) max=n; });
+    return max;
+  }
   function nextCode(){
     let max = 0;
     items.forEach(it=>{ const n = parseInt((it.code||'').replace(/\D/g,''),10); if(!isNaN(n)&&n>max) max=n; });
-    return 'No.' + String(max+1).padStart(3,'0');
+    // 完全削除しても番号を再利用しない（印刷済みQRとの衝突を防ぐ）ため、発行済みの最大値を別に保存する
+    const n = Math.max(max, readCounter()) + 1;
+    try{ localStorage.setItem(COUNTER_KEY, String(n)); }catch(e){}
+    return 'No.' + String(n).padStart(3,'0');
   }
 
   function allTags(){
@@ -369,7 +455,8 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     if(items.length===0) return;
     const notice = document.getElementById('notice');
     if(notice.style.display==='block') return;
-    const days = last ? -daysUntil(last) : null;
+    let days = last ? -daysUntil(last) : null;
+    if(days!==null && isNaN(days)) days = null;
     if(days===null || days>=7){
       showNotice(days===null ? 'まだバックアップを取っていません。「品目データのバックアップ」からJSONを書き出しておくと安心です。' : '最後のバックアップから'+days+'日経過しています。JSONを書き出しておくと安心です。', false, true);
     }
@@ -528,6 +615,18 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     document.getElementById('statSoon').textContent = soon;
     document.getElementById('statOverdue').textContent = overdue;
 
+    const tabCounts = { all:total, available:activeItems.filter(i=>i.status==='available').length, loaned, soon, overdue, repair:activeItems.filter(i=>i.status==='repair').length, trash:items.filter(i=>i.deleted).length };
+    const tabLabels = { all:'すべて', available:'貸出可能', loaned:'貸出中', soon:'まもなく期限', overdue:'延滞', repair:'修理中', trash:'ごみ箱' };
+    document.querySelectorAll('#tabs button[data-tab]').forEach(b=>{
+      b.textContent = tabLabels[b.dataset.tab]+' ('+tabCounts[b.dataset.tab]+')';
+    });
+
+    // 借用者の入力候補（過去の履歴＋CSV読み込み分）
+    const borrowerNames = new Set(importedOptions.borrowers);
+    items.forEach(it=>(it.history||[]).forEach(h=>{ if(h.borrower) borrowerNames.add(h.borrower); }));
+    document.getElementById('borrowerList').innerHTML =
+      Array.from(borrowerNames).sort((a,b)=>a.localeCompare(b,'ja')).map(n=>'<option value="'+escapeHtml(n)+'"></option>').join('');
+
     renderTagChips();
 
     const query = document.getElementById('searchBox').value.trim().toLowerCase();
@@ -536,6 +635,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       if(it.deleted) return false;
       if(currentTab==='available' && it.status!=='available') return false;
       if(currentTab==='loaned' && it.status!=='loaned') return false;
+      if(currentTab==='repair' && it.status!=='repair') return false;
       if(currentTab==='soon' && !isDueSoon(it)) return false;
       if(currentTab==='overdue' && !isOverdue(it)) return false;
       if(activeTagFilter && !(it.tags||[]).includes(activeTagFilter)) return false;
@@ -554,7 +654,14 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     }
 
     const list = document.getElementById('itemList');
+    list.className = 'item-list' + (viewMode==='grid' ? ' grid' : '');
+    document.getElementById('viewToggleBtn').textContent = viewMode==='grid' ? 'リスト表示に切替' : 'カード表示に切替';
     const empty = document.getElementById('emptyState');
+    // 再描画前に、開いているフォームの入力値を退避する（検索入力などで消えないように）
+    const savedForms = {};
+    list.querySelectorAll('form[id]').forEach(f=>{
+      savedForms[f.id] = Array.from(f.querySelectorAll('input,select')).map(e=>e.type==='file' ? e.files : (e.type==='checkbox' ? e.checked : e.value));
+    });
     list.innerHTML = '';
 
     if(filtered.length===0){
@@ -569,7 +676,8 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       li.className='item';
 
       let badgeHtml='';
-      if(it.status==='available') badgeHtml='<span class="badge available">貸出可能</span>';
+      if(it.status==='repair') badgeHtml='<span class="badge repair">修理中'+(it.repairSince?'（'+fmtDate(it.repairSince)+'〜）':'')+'</span>';
+      else if(it.status==='available') badgeHtml='<span class="badge available">貸出可能</span>';
       else if(isOverdue(it)) badgeHtml='<span class="badge overdue">延滞 '+(-daysUntil(it.dueDate))+'日</span>';
       else if(isDueSoon(it)) badgeHtml='<span class="badge soon">まもなく期限</span>';
       else badgeHtml='<span class="badge loaned">貸出中</span>';
@@ -581,68 +689,24 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       const tagsHtml = (it.tags||[]).map(t=>'<span class="pill">#'+escapeHtml(t)+'</span>').join('');
 
       li.innerHTML = `
-        <div class="code sans">${escapeHtml(it.code)}</div>
+        <div class="code sans">${thumbHtml(it)}<span>${escapeHtml(it.code)}</span></div>
         <div>
           <div class="item-name">${badgeHtml}${escapeHtml(it.name)}</div>
           <div class="item-meta sans">${metaHtml}</div>
           ${it.status==='loaned' ? loanBarHtml(it) : ''}
           ${tagsHtml ? '<div class="item-tags">'+tagsHtml+'</div>' : ''}
-          ${openLoanFormId===it.id ? loanFormHtml(it) : ''}
-          ${editLoanFormId===it.id ? editLoanFormHtml(it) : ''}
-          ${editItemId===it.id ? editItemFormHtml(it) : ''}
-          ${openQrId===it.id ? qrBoxHtml(it) : ''}
-          ${openHistoryId===it.id ? historyBoxHtml(it) : ''}
+          ${isPanel('loan',it) ? loanFormHtml(it) : ''}
+          ${isPanel('editLoan',it) ? editLoanFormHtml(it) : ''}
+          ${isPanel('editItem',it) ? editItemFormHtml(it) : ''}
+          ${isPanel('qr',it) ? qrBoxHtml(it) : ''}
+          ${isPanel('history',it) ? historyBoxHtml(it) : ''}
         </div>
-        <div class="actions sans" data-actions></div>
+        <div class="actions sans">${actionsHtml(it)}</div>
       `;
-
-      const actionsEl = li.querySelector('[data-actions]');
-      if(it.deleted){
-        const rb=document.createElement('button'); rb.className='small'; rb.textContent='元に戻す';
-        rb.onclick=()=>restoreItem(it.id);
-        actionsEl.appendChild(rb);
-        const pb=document.createElement('button'); pb.className='small ghost'; pb.textContent='完全に削除';
-        pb.onclick=()=>purgeItem(it.id);
-        actionsEl.appendChild(pb);
-        list.appendChild(li);
-        return;
-      }
-      if(it.status==='available'){
-        const btn=document.createElement('button'); btn.className='small'; btn.textContent='貸出する';
-        btn.onclick=()=>{ openLoanFormId = openLoanFormId===it.id?null:it.id; openQrId=null; openHistoryId=null; editLoanFormId=null; render(); };
-        actionsEl.appendChild(btn);
-      } else {
-        const btn=document.createElement('button'); btn.className='small ghost'; btn.textContent='返却する';
-        btn.onclick=()=>returnItem(it.id);
-        actionsEl.appendChild(btn);
-
-        const editBtn=document.createElement('button'); editBtn.className='small ghost'; editBtn.textContent='期間を編集';
-        editBtn.onclick=()=>{ editLoanFormId = editLoanFormId===it.id?null:it.id; openLoanFormId=null; openQrId=null; openHistoryId=null; render(); };
-        actionsEl.appendChild(editBtn);
-      }
-      const qrBtn=document.createElement('button'); qrBtn.className='small ghost'; qrBtn.textContent='QR表示';
-      qrBtn.onclick=()=>{ openQrId = openQrId===it.id?null:it.id; openLoanFormId=null; openHistoryId=null; editLoanFormId=null; render(); };
-      actionsEl.appendChild(qrBtn);
-
-      const histBtn=document.createElement('button'); histBtn.className='small ghost'; histBtn.textContent='履歴';
-      histBtn.onclick=()=>{ openHistoryId = openHistoryId===it.id?null:it.id; openLoanFormId=null; openQrId=null; editLoanFormId=null; render(); };
-      actionsEl.appendChild(histBtn);
-
-      const itemEditBtn=document.createElement('button'); itemEditBtn.className='small ghost'; itemEditBtn.textContent='編集';
-      itemEditBtn.onclick=()=>{ editItemId = editItemId===it.id?null:it.id; openLoanFormId=null; openQrId=null; openHistoryId=null; editLoanFormId=null; render(); };
-      actionsEl.appendChild(itemEditBtn);
-
-      const del=document.createElement('button'); del.className='small ghost'; del.textContent='削除';
-      del.style.borderColor='var(--rule)'; del.style.color='var(--ink-soft)';
-      del.onclick=()=>deleteItem(it.id);
-      actionsEl.appendChild(del);
-
-      // 読み上げ用に品目名付きのラベルを付ける
-      actionsEl.querySelectorAll('button').forEach(b=>b.setAttribute('aria-label', b.textContent+'（'+it.name+'）'));
 
       list.appendChild(li);
 
-      if(openLoanFormId===it.id){
+      if(isPanel('loan',it)){
         const form = li.querySelector('#loanForm-'+it.id);
         if(form){
           const borrowerSel = form.querySelector('.borrowerOptions');
@@ -662,20 +726,27 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
           });
         }
       }
-      if(editItemId===it.id){
+      if(isPanel('editItem',it)){
         const form = li.querySelector('#editItemForm-'+it.id);
         if(form){
-          form.addEventListener('submit',(e)=>{
+          form.addEventListener('submit', async (e)=>{
             e.preventDefault();
             const name = form.querySelector('.editNameInput').value.trim();
             const category = form.querySelector('.editCategoryInput').value.trim();
             const tags = form.querySelector('.editTagsInput').value.split(',').map(t=>t.trim()).filter(Boolean);
             if(!name) return;
-            updateItemInfo(it.id, name, category, tags);
+            let image;  // undefined=変更なし / ''=削除 / 文字列=差し替え
+            const file = form.querySelector('.editImageInput').files[0];
+            const rm = form.querySelector('.editImageRemove');
+            if(file){
+              try{ image = await resizeImage(file, 320); }
+              catch(err){ showNotice(err.message, true); return; }
+            } else if(rm && rm.checked){ image = ''; }
+            updateItemInfo(it.id, name, category, tags, image);
           });
         }
       }
-      if(editLoanFormId===it.id){
+      if(isPanel('editLoan',it)){
         const form = li.querySelector('#editLoanForm-'+it.id);
         if(form){
           form.addEventListener('submit',(e)=>{
@@ -688,16 +759,16 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
           });
         }
       }
-      if(openQrId===it.id){
+      if(isPanel('qr',it)){
         const wrap = li.querySelector('#qrcanvas-'+it.id);
         let hasImage = false;
         if(wrap){
           if(window.QRCode){
             wrap.innerHTML='';
-            new QRCode(wrap, { text: it.code+' '+it.name, width:110, height:110, colorDark:'#23261f', colorLight:'#ffffff' });
+            new QRCode(wrap, { text: it.code, width:110, height:110, colorDark:'#23261f', colorLight:'#ffffff' });
             hasImage = true;
           } else {
-            wrap.innerHTML = '<div class="sans" style="font-size:11.5px;color:var(--stamp-red);max-width:140px;">QRコードライブラリを読み込めませんでした。ネット接続をご確認のうえ、ページを再読み込みしてください。</div>';
+            wrap.innerHTML = '<div class="sans" style="font-size:11.5px;color:var(--stamp-red);max-width:140px;">QRコードを生成できませんでした。ページを再読み込みしてください。</div>';
           }
         }
         const printBtn = li.querySelector('#printQr-'+it.id);
@@ -721,6 +792,57 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
           }
         }
       }
+    });
+
+    list.querySelectorAll('form[id]').forEach(f=>{
+      const vals = savedForms[f.id]; if(!vals) return;
+      f.querySelectorAll('input,select').forEach((e,i)=>{
+        const v = vals[i];
+        if(e.type==='file'){ if(v && v.length) e.files = v; }
+        else if(e.type==='checkbox'){ e.checked = !!v; }
+        else if(v!==undefined){ e.value = v; }
+      });
+    });
+  }
+
+  // 保存済み画像のうち、安全な data:image のみ表示に使う
+  function safeImg(it){
+    return (typeof it.image==='string' && /^data:image\/(jpeg|png|webp|gif);base64,/.test(it.image.slice(0,40))) ? it.image : '';
+  }
+  function actionBtn(it, action, label, cls){
+    return '<button type="button" class="small'+(cls?' '+cls:'')+'" data-action="'+action+'" data-id="'+escapeHtml(it.id)+'" aria-label="'+escapeHtml(label+'（'+it.name+'）')+'">'+label+'</button>';
+  }
+  function actionsHtml(it){
+    if(it.deleted) return actionBtn(it,'restore','元に戻す','') + actionBtn(it,'purge','完全に削除','ghost');
+    let h = '';
+    if(it.status==='available') h += actionBtn(it,'loan','貸出する','') + actionBtn(it,'repair-on','修理中にする','ghost');
+    else if(it.status==='repair') h += actionBtn(it,'repair-off','修理完了','');
+    else h += actionBtn(it,'return','返却する','ghost') + actionBtn(it,'editLoan','期間を編集','ghost');
+    return h + actionBtn(it,'qr','QR表示','ghost') + actionBtn(it,'history','履歴','ghost') + actionBtn(it,'editItem','編集','ghost') + actionBtn(it,'delete','削除','ghost quiet');
+  }
+  function thumbHtml(it){
+    const src = safeImg(it);
+    if(!src) return '<div class="thumb-ph"></div>';
+    return '<img class="thumb'+(it.status!=='available'?' dim':'')+'" src="'+escapeHtml(src)+'" alt="'+escapeHtml(it.name)+'">';
+  }
+  // 画像を長辺maxSide pxのJPEGに縮小してdata URLにする（localStorageの容量節約）
+  function resizeImage(file, maxSide){
+    return new Promise((resolve, reject)=>{
+      if(!file || !/^image\//.test(file.type)) return reject(new Error('画像ファイルを選んでください。'));
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = ()=>{
+        const r = Math.min(1, maxSide/Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width*r)), h = Math.max(1, Math.round(img.height*r));
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL('image/jpeg', 0.7));
+      };
+      img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした。')); };
+      img.src = url;
     });
   }
 
@@ -752,7 +874,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       <form class="loan-form" id="loanForm-${it.id}">
         <div class="borrower-cell">
           ${borrowerSelect}
-          <input type="text" class="borrowerInput" placeholder="借用者名" required>
+          <input type="text" class="borrowerInput" list="borrowerList" placeholder="借用者名" required>
         </div>
         <input type="date" class="loanDateInput" value="${defaultStart}" required>
         <input type="date" class="dueInput" value="${defaultDue}" required>
@@ -779,6 +901,10 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
         <input type="text" class="editTagsInput" value="${escapeHtml((it.tags||[]).join(', '))}" placeholder="タグ（カンマ区切り）">
         <button type="submit" class="small">保存</button>
         <button type="button" class="small ghost" data-cancel="editItem">取消</button>
+        <div class="img-field" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <label>画像: <input type="file" class="editImageInput" accept="image/*"></label>
+          ${safeImg(it) ? '<label><input type="checkbox" class="editImageRemove"> 現在の画像を削除</label>' : ''}
+        </div>
       </form>`;
   }
 
@@ -804,19 +930,27 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     return '<div class="qr-box" style="display:block;"><ul class="history-list">'+rows+'</ul></div>';
   }
 
+  const ACTIONS = {
+    loan:id=>togglePanel('loan',id), editLoan:id=>togglePanel('editLoan',id), editItem:id=>togglePanel('editItem',id),
+    qr:id=>togglePanel('qr',id), history:id=>togglePanel('history',id),
+    'repair-on':id=>setRepair(id,true), 'repair-off':id=>setRepair(id,false),
+    'return':id=>returnItem(id), 'delete':id=>deleteItem(id), restore:id=>restoreItem(id), purge:id=>purgeItem(id)
+  };
   document.getElementById('itemList').addEventListener('click', function(e){
-    const b = e.target.closest('[data-cancel]'); if(!b) return;
-    const k = b.dataset.cancel;
-    if(k==='loan') openLoanFormId=null;
-    else if(k==='editLoan') editLoanFormId=null;
-    else if(k==='editItem') editItemId=null;
-    render();
+    const a = e.target.closest('[data-action]');
+    if(a){ const fn = ACTIONS[a.dataset.action]; if(fn) fn(a.dataset.id); return; }
+    if(e.target.closest('[data-cancel]')){ closePanel(); render(); }
+  });
+  // Escキーで開いているパネルを閉じる
+  document.addEventListener('keydown', function(e){
+    if(e.key==='Escape' && panel.type){ closePanel(); render(); }
   });
 
-  function updateItemInfo(id, name, category, tags){
+  function updateItemInfo(id, name, category, tags, image){
     const it = items.find(i=>i.id===id); if(!it) return;
     it.name = name; it.category = category; it.tags = tags;
-    editItemId = null; save(); render();
+    if(image!==undefined){ if(image) it.image = image; else delete it.image; }
+    closePanel(); save(); render();
   }
 
   function renderTagChips(){
@@ -839,7 +973,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     const it = items.find(i=>i.id===id); if(!it) return;
     it.status='loaned'; it.borrower=borrower; it.loanDate=loanDate; it.dueDate=dueDate;
     it.history.push({ borrower, loanDate, dueDate, returnDate: null });
-    openLoanFormId=null; save(); render();
+    closePanel(); save(); render();
   }
 
   function updateLoanPeriod(id, loanDate, dueDate){
@@ -852,15 +986,36 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
       // 履歴が空、または直近の貸出が既に返却済みの場合は新しい貸出中レコードを追加する
       it.history.push({ borrower: it.borrower||'', loanDate, dueDate, returnDate: null });
     }
-    editLoanFormId = null; save(); render();
+    closePanel(); save(); render();
+  }
+
+  function setRepair(id, on){
+    const it = items.find(i=>i.id===id); if(!it) return;
+    if(on){
+      if(it.status!=='available') return;
+      it.status = 'repair'; it.repairSince = todayISO();
+    } else {
+      if(it.status!=='repair') return;
+      it.status = 'available'; delete it.repairSince;
+    }
+    closePanel();
+    save(); render();
+    showNotice('「'+it.name+'」を'+(on ? '修理中にしました。' : '貸出可能に戻しました。'));
   }
 
   function returnItem(id){
     const it = items.find(i=>i.id===id); if(!it) return;
     const last = it.history[it.history.length-1];
-    if(last && !last.returnDate) last.returnDate = todayISO();
+    const prev = { borrower:it.borrower, loanDate:it.loanDate, dueDate:it.dueDate };
+    const closedLast = !!(last && !last.returnDate);
+    if(closedLast) last.returnDate = todayISO();
     it.status='available'; it.borrower=''; it.loanDate=''; it.dueDate='';
     save(); render();
+    showUndoNotice('「'+it.name+'」を返却しました。', ()=>{
+      it.status='loaned'; it.borrower=prev.borrower; it.loanDate=prev.loanDate; it.dueDate=prev.dueDate;
+      if(closedLast) last.returnDate = null;
+      save(); render();
+    });
   }
 
   // 削除はごみ箱へ移動（履歴ごと保持。ごみ箱タブから復元できる）
@@ -885,7 +1040,7 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     save(); render();
   }
 
-  document.getElementById('addForm').addEventListener('submit', function(e){
+  document.getElementById('addForm').addEventListener('submit', async function(e){
     e.preventDefault();
     const name = document.getElementById('newName').value.trim();
     const category = document.getElementById('newCategory').value.trim();
@@ -894,10 +1049,17 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     if(!name) return;
     const dup = items.find(i=>!i.deleted && i.name.trim().toLowerCase()===name.toLowerCase());
     if(dup && !window.confirm('同じ名前の品目「'+dup.name+'」（'+dup.code+'）が既にあります。別の品目として登録しますか？')) return;
-    items.push({ id:'it_'+Date.now()+'_'+Math.floor(Math.random()*1000), code:nextCode(), name, category, tags, status:'available', borrower:'', loanDate:'', dueDate:'', history:[] });
+    let image = '';
+    const imgFile = document.getElementById('newImage').files[0];
+    if(imgFile){
+      try{ image = await resizeImage(imgFile, 320); }
+      catch(err){ showNotice(err.message, true); return; }
+    }
+    items.push({ id:newId(), code:nextCode(), name, category, tags, image, status:'available', borrower:'', loanDate:'', dueDate:'', history:[] });
     document.getElementById('newName').value='';
     document.getElementById('newCategory').value='';
     document.getElementById('newTags').value='';
+    document.getElementById('newImage').value='';
     save(); render();
   });
 
@@ -1115,12 +1277,14 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
 
   function csvEscape(v){
     v = String(v==null?'':v);
-    if(/[",\n]/.test(v)) v = '"'+v.replace(/"/g,'""')+'"';
+    // 先頭が = + - @ の値はExcelで数式扱いされるため ' を付けて無害化する
+    if(/^[=+\-@\t\r]/.test(v)) v = "'"+v;
+    if(/[",\n\r]/.test(v)) v = '"'+v.replace(/"/g,'""')+'"';
     return v;
   }
 
   document.getElementById('dataExportBtn').addEventListener('click', async function(){
-    const payload = { app:'lending-ledger', version:1, exportedAt: todayISO(), items: items };
+    const payload = { app:'lending-ledger', version:2, exportedAt: todayISO(), items: items, options: importedOptions, codeCounter: readCounter() };
     const r = await saveFile(JSON.stringify(payload, null, 2), 'application/json', '貸出データ_'+todayISO()+'.json', 'JSONファイル', ['.json'], 'json-export');
     if(r!=='cancelled'){
       try{ localStorage.setItem(BACKUP_KEY, todayISO()); }catch(e){}
@@ -1175,20 +1339,37 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
         name: String(it.name || '(名称未設定)'),
         category: String(it.category || ''),
         tags: Array.isArray(it.tags) ? it.tags.map(t=>String(t).trim()).filter(Boolean) : [],
-        status: loaned ? 'loaned' : 'available',
+        status: it.status==='repair' ? 'repair' : (loaned ? 'loaned' : 'available'),
         borrower: String(it.borrower || ''),
         loanDate: dateOr(it.loanDate),
         dueDate: dateOr(it.dueDate),
         history
       };
+      if(typeof it.image==='string' && it.image.length<400000 && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/=]+$/.test(it.image)) rec.image = it.image;
+      if(rec.status==='repair' && isDate(it.repairSince)) rec.repairSince = it.repairSince;
       if(it.deleted){ rec.deleted = true; rec.deletedAt = dateOr(it.deletedAt); }
       cleaned.push(rec);
     });
     items = cleaned;
+    try{ localStorage.setItem(COUNTER_KEY, String(Math.max(readCounter(), maxCodeNumber(items), parseInt(parsed && parsed.codeCounter,10) || 0))); }catch(e){}
     save();
     render();
+    // 選択肢（品目名・分類・タグ・借用者）も含まれていれば復元する
+    let optMsg = '';
+    if(parsed && !Array.isArray(parsed) && parsed.options && typeof parsed.options==='object'){
+      const strs = a=>Array.isArray(a) ? a.map(v=>String(v).trim()).filter(Boolean) : [];
+      const o = parsed.options, r = o.raw;
+      importedOptions = {
+        names:strs(o.names), categories:strs(o.categories), tags:strs(o.tags), borrowers:strs(o.borrowers),
+        raw:(r && typeof r.text==='string') ? { fileName:String(r.fileName||''), text:r.text, importedAt:isDate(r.importedAt) ? r.importedAt : todayISO() } : null
+      };
+      await saveOptions();
+      renderOptionSelects();
+      render();
+      optMsg = '選択肢（借用者'+importedOptions.borrowers.length+'件など）も復元しました。';
+    }
     status.classList.remove('error');
-    status.textContent = items.length+'件の品目データを読み込みました。'+(fixed||skipped ? '（補正 '+fixed+'件・除外 '+skipped+'件）' : '');
+    status.textContent = items.length+'件の品目データを読み込みました。'+optMsg+(fixed||skipped ? '（補正 '+fixed+'件・除外 '+skipped+'件）' : '');
   }
 
   document.getElementById('dataImportBtn').addEventListener('click', function(){
@@ -1198,6 +1379,28 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
     const file = e.target.files[0];
     handleJsonFile(file);
     e.target.value = '';
+  });
+
+  // 別のタブで保存されたら最新の内容に更新する（古い画面のまま上書きして消すのを防ぐ）
+  window.addEventListener('storage', function(e){
+    if(e.key===STORE_KEY){
+      try{
+        const v = JSON.parse(e.newValue || '[]');
+        if(!Array.isArray(v)) return;
+        items = v;
+        items.forEach(it=>{ if(!it.tags) it.tags=[]; if(!it.history) it.history=[]; });
+        render();
+        showNotice('別のタブでデータが更新されたため、最新の内容に更新しました。');
+      }catch(err){ /* 壊れた値は無視 */ }
+    } else if(e.key===OPTIONS_KEY){
+      loadOptions();
+    }
+  });
+
+  document.getElementById('viewToggleBtn').addEventListener('click', function(){
+    viewMode = viewMode==='grid' ? 'list' : 'grid';
+    try{ localStorage.setItem(VIEW_KEY, viewMode); }catch(e){}
+    render();
   });
 
   load();
