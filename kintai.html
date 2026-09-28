@@ -695,6 +695,12 @@ function KintaiApp() {
     setTimeout(() => jumpToDate(todayKey), 100);
   };
 
+  // カレンダーの位置までスクロールして戻る
+  const goCalendar = () => {
+    const el = document.querySelector(".k-mini-cal");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const onNoteChange = (key, val) => {
     const patch = { note: val, remark: val, isLeave: val === "有給" };
     if (val in autoFillTimes) {
@@ -1150,6 +1156,7 @@ function KintaiApp() {
           <h2>{view.y}年 {monthLabel(view.m)}</h2>
           <button className="k-nav" onClick={() => changeMonth(1)}>›</button>
           <button className="k-today-btn" onClick={goToday} title="今日の行へ移動">今日</button>
+          <button className="k-today-btn" onClick={goCalendar} title="カレンダーへ戻る">カレンダーに戻る</button>
         </div>
 
         {limitAlerts.length > 0 && (

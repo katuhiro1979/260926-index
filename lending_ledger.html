@@ -196,17 +196,8 @@ var QRCode;!function(){function a(a){this.mode=c.MODE_8BIT_BYTE,this.data=a,this
 
   .quiet{border-color:var(--rule);color:var(--ink-soft);}
 
-  /* ダークモード */
-  @media (prefers-color-scheme: dark){
-    :root{
-      color-scheme:dark;
-      --paper:#1c1e19; --ink:#e8e6da; --ink-soft:#a5a698; --rule:#3d4036; --card:#24261f;
-      --stamp-red:#e27a6c; --stamp-red-bg:#3a2320; --sage:#98b894; --sage-bg:#26312a;
-      --amber:#e0b35c; --amber-bg:#3a3020; --blue:#8fb0dc; --blue-bg:#232c38;
-    }
-    input,select,.tag-chip,ul.item-list.grid li.item{background:var(--paper);}
-    .tag-chip.active{background:var(--ink);}
-  }
+  /* 常にライトモードで表示する */
+  :root{color-scheme:light;}
 
   /* 印刷（画面がダークでも紙は明るい配色にする） */
   @media print{
