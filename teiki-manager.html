@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>定期券マネージャー</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -162,7 +163,8 @@
     flex-direction:column;
     gap:2px;
   }
-  .cal-day.empty{ background:transparent; }
+  /* 一覧用の .empty（余白・破線）が効かないように打ち消す */
+  .cal-day.empty{ background:transparent; padding:0; border:none; border-radius:0; }
   .cal-day.today{ box-shadow:inset 0 0 0 1.5px var(--ink); }
   .cal-day .cal-num{
     font-size:10.5px;
@@ -264,6 +266,7 @@
     font-weight:500;
     cursor:pointer;
     color:var(--ink-soft);
+    font-family:inherit;
     transition:border-color .12s ease, color .12s ease;
   }
   .chip .dot{
@@ -599,7 +602,7 @@
 </div>
 
 <div class="overlay" id="overlay">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <h2 id="modalTitle">定期券を追加</h2>
     <form id="ticketForm">
       <div class="field">
@@ -658,7 +661,7 @@
   let calMonth = today.getMonth(); // 0-11
   let editingId = null;
   let selectedColor = COLORS[0];
-  let storageReady = false;
+  let lastFocus = null;
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -668,16 +671,27 @@
   const form = $('#ticketForm');
   const colorPicker = $('#colorPicker');
 
-  function todayISO(){ return new Date().toISOString().slice(0,10); }
+  // 日付はすべてローカル時間で扱う（UTC変換による1日ずれを防ぐ）
+  function fmtISO(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+  function parseISO(s){
+    const [y,m,d] = s.split('-').map(Number);
+    return new Date(y, m-1, d);
+  }
+  function todayISO(){ return fmtISO(new Date()); }
 
   function addMonths(dateStr, months){
-    const d = new Date(dateStr + 'T00:00:00');
+    const d = parseISO(dateStr);
+    const day = d.getDate();
+    d.setDate(1);
     d.setMonth(d.getMonth() + Number(months));
-    return d.toISOString().slice(0,10);
+    // 月末の繰り上がりを防ぐ（例：8/31＋1ヶ月 → 9/30）
+    const last = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+    d.setDate(Math.min(day, last));
+    return fmtISO(d);
   }
 
   function daysUntil(dateStr){
-    const end = new Date(dateStr + 'T00:00:00');
+    const end = parseISO(dateStr);
     const now = new Date(); now.setHours(0,0,0,0);
     return Math.round((end - now) / 86400000);
   }
@@ -723,27 +737,74 @@
   const fsSupported = 'showSaveFilePicker' in window;
   let fileHandle = null;
 
+  const BACKUP_KEY = 'teiki-manager:backup';
+  const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  function newId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+  // 外部データ（インポート・保存ファイル）を検証して安全な形に整える
+  function sanitizePass(p){
+    if(!p || typeof p !== 'object') return null;
+    const member = String(p.member || '').trim();
+    const route = String(p.route || '').trim();
+    if(!member || !route) return null;
+    if(!DATE_RE.test(p.start) || !DATE_RE.test(p.end)) return null;
+    const period = Number(p.period);
+    const price = Number(p.price);
+    return {
+      id: (typeof p.id === 'string' && /^[\w-]+$/.test(p.id)) ? p.id : newId(),
+      member,
+      color: COLOR_RE.test(p.color) ? p.color : COLORS[0],
+      route,
+      start: p.start,
+      period: String(Number.isFinite(period) && period > 0 ? period : 1),
+      end: p.end,
+      price: Number.isFinite(price) && price >= 0 ? price : 0
+    };
+  }
+
+  function backupCurrent(){
+    if(passes.length === 0) return;
+    try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(passes)); }catch(e){}
+  }
+
   function loadPasses(){
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
-      passes = raw ? JSON.parse(raw) : [];
+      const arr = raw ? JSON.parse(raw) : [];
+      passes = Array.isArray(arr) ? arr.map(sanitizePass).filter(Boolean) : [];
     }catch(e){
       console.error('読み込みに失敗しました', e);
       passes = [];
     }
-    storageReady = true;
     render();
   }
 
+  let saveErrorShown = false;
   function savePasses(){
     try{
       localStorage.setItem(STORAGE_KEY, JSON.stringify(passes));
+      saveErrorShown = false;
     }catch(e){
       console.error('保存に失敗しました', e);
-      alert('データの保存に失敗しました。ブラウザの設定をご確認ください。');
+      if(!saveErrorShown){
+        saveErrorShown = true;
+        alert('データの保存に失敗しました。ブラウザの設定をご確認ください。');
+      }
     }
     writeToAutosaveFile();
   }
+
+  // 他のタブでデータが変更されたら反映する
+  window.addEventListener('storage', (e) => {
+    if(e.key !== STORAGE_KEY) return;
+    try{
+      const arr = e.newValue ? JSON.parse(e.newValue) : [];
+      passes = Array.isArray(arr) ? arr.map(sanitizePass).filter(Boolean) : [];
+      render();
+    }catch(err){ console.error(err); }
+  });
 
   // ---- IndexedDB: remembers chosen file/folder handles across reloads ----
   function idbOpen(){
@@ -817,12 +878,48 @@
       if(perm === 'granted'){
         fileHandle = handle;
         setAutosaveUI('on', handle.name);
+        if(!(await reconcileWithFile())) await disconnectAutosaveFile();
       }else{
         fileHandle = handle;
         setAutosaveUI('pending', handle.name);
       }
     }catch(e){
       setAutosaveUI('off');
+    }
+  }
+
+  // 接続したファイルに既存データがあれば、上書き前に読み込むか確認する
+  // 戻り値：false = ファイルを守るため接続を中止すべき
+  async function reconcileWithFile(){
+    if(!fileHandle) return true;
+    try{
+      const perm = await fileHandle.queryPermission({ mode: 'readwrite' });
+      if(perm !== 'granted') return true;
+      const text = await (await fileHandle.getFile()).text();
+      if(!text.trim()) return true;
+      let arr;
+      try{ arr = JSON.parse(text); }catch(err){ arr = null; }
+      if(!Array.isArray(arr)){
+        return confirm('保存先ファイルの内容を読み取れません。上書きして自動保存を続けますか？\n（キャンセルすると接続を解除します）');
+      }
+      const fromFile = arr.map(sanitizePass).filter(Boolean);
+      if(fromFile.length === 0) return true;
+      if(JSON.stringify(fromFile) === JSON.stringify(passes)) return true;
+      const useFile = confirm(
+        `保存先ファイルに${fromFile.length}件のデータがあります（現在：${passes.length}件）。\n\n` +
+        `「OK」= ファイルの内容を読み込む（現在のデータは退避）\n` +
+        `「キャンセル」= 現在のデータでファイルを上書きする`
+      );
+      if(useFile){
+        backupCurrent();
+        passes = fromFile;
+        savePasses();
+        render();
+      }
+      return true;
+    }catch(e){
+      console.error('自動保存ファイルの確認に失敗しました', e);
+      return true;
     }
   }
 
@@ -834,6 +931,7 @@
         const perm = await fileHandle.requestPermission({ mode: 'readwrite' });
         if(perm === 'granted'){
           setAutosaveUI('on', fileHandle.name);
+          if(!(await reconcileWithFile())){ await disconnectAutosaveFile(); return; }
           await writeToAutosaveFile();
           return;
         }
@@ -845,6 +943,7 @@
       fileHandle = handle;
       await idbSetHandle('autosave', handle);
       setAutosaveUI('on', handle.name);
+      if(!(await reconcileWithFile())){ await disconnectAutosaveFile(); return; }
       await writeToAutosaveFile();
     }catch(e){
       if(e && e.name !== 'AbortError'){
@@ -859,7 +958,14 @@
     setAutosaveUI('off');
   }
 
-  async function writeToAutosaveFile(){
+  // 連続保存で書き込みが衝突しないよう直列化する
+  let writeChain = Promise.resolve();
+  function writeToAutosaveFile(){
+    writeChain = writeChain.then(doWriteAutosave);
+    return writeChain;
+  }
+
+  async function doWriteAutosave(){
     if(!fsSupported || !fileHandle) return;
     try{
       const perm = await fileHandle.queryPermission({ mode: 'readwrite' });
@@ -952,11 +1058,11 @@
   // ---------- Rendering ----------
   function renderMemberFilter(){
     const members = uniqueMembers();
-    let html = `<div class="chip ${activeMember==='all'?'active':''}" data-member="all">
-        <span class="dot" style="background:${'#1B2333'}"></span>すべて</div>`;
+    let html = `<button type="button" class="chip ${activeMember==='all'?'active':''}" data-member="all" aria-pressed="${activeMember==='all'}">
+        <span class="dot" style="background:${'#1B2333'}"></span>すべて</button>`;
     members.forEach((color, name) => {
-      html += `<div class="chip ${activeMember===name?'active':''}" data-member="${escapeHtml(name)}">
-        <span class="dot" style="background:${color}"></span>${escapeHtml(name)}</div>`;
+      html += `<button type="button" class="chip ${activeMember===name?'active':''}" data-member="${escapeHtml(name)}" aria-pressed="${activeMember===name}">
+        <span class="dot" style="background:${color}"></span>${escapeHtml(name)}</button>`;
     });
     memberRow.innerHTML = html;
     memberRow.querySelectorAll('.chip').forEach(chip => {
@@ -968,15 +1074,20 @@
   }
 
   function renderStats(){
-    const visible = passes;
+    // 絞り込み中の利用者に連動。合計金額は期限切れを除く
+    const visible = filteredPasses();
     $('#statTotal').textContent = visible.length;
-    $('#statWarn').textContent = visible.filter(p => statusOf(p.end) === 'warn' || statusOf(p.end) === 'danger').length;
-    const sum = visible.reduce((a,p) => a + Number(p.price||0), 0);
+    $('#statWarn').textContent = visible.filter(p => statusOf(p.end) === 'warn').length;
+    const sum = visible.filter(p => statusOf(p.end) !== 'danger').reduce((a,p) => a + Number(p.price||0), 0);
     $('#statSum').textContent = fmtYen(sum);
   }
 
+  function filteredPasses(){
+    return activeMember === 'all' ? passes : passes.filter(p => p.member === activeMember);
+  }
+
   function renderList(){
-    const filtered = activeMember === 'all' ? passes : passes.filter(p => p.member === activeMember);
+    const filtered = filteredPasses();
     const sorters = {
       'end-asc': (a,b) => daysUntil(a.end) - daysUntil(b.end),
       'end-desc': (a,b) => daysUntil(b.end) - daysUntil(a.end),
@@ -997,8 +1108,8 @@
       const st = statusOf(p.end);
       const label = statusLabel(p.end);
       const statusClass = st === 'ok' ? 'status-ok' : (st === 'warn' ? 'status-warn' : 'status-danger');
-      const totalSpan = Math.max(1, (new Date(p.end) - new Date(p.start)) / 86400000);
-      const elapsed = Math.min(totalSpan, Math.max(0, (new Date() - new Date(p.start)) / 86400000));
+      const totalSpan = Math.max(1, (parseISO(p.end) - parseISO(p.start)) / 86400000);
+      const elapsed = Math.min(totalSpan, Math.max(0, (new Date() - parseISO(p.start)) / 86400000));
       const pct = Math.min(100, Math.round((elapsed/totalSpan)*100));
       return `
       <div class="ticket" style="--member-color:${p.color}" data-id="${p.id}">
@@ -1024,8 +1135,8 @@
           </div>
         </div>
         <div class="ticket-actions">
-          <button class="icon-btn edit-btn">編集</button>
-          <button class="icon-btn danger delete-btn">削除</button>
+          <button class="icon-btn edit-btn" aria-label="${escapeHtml(p.member)}の定期券を編集">編集</button>
+          <button class="icon-btn danger delete-btn" aria-label="${escapeHtml(p.member)}の定期券を削除">削除</button>
         </div>
       </div>`;
     }).join('');
@@ -1045,6 +1156,8 @@
   }
 
   function render(){
+    // 絞り込み中の利用者がいなくなったら「すべて」に戻す
+    if(activeMember !== 'all' && !uniqueMembers().has(activeMember)) activeMember = 'all';
     renderMemberFilter();
     renderStats();
     renderList();
@@ -1089,7 +1202,13 @@
     $('#calendarGrid').innerHTML = cells;
     $('#calendarGrid').querySelectorAll('.cal-pill[data-id]').forEach(pill => {
       pill.addEventListener('click', () => {
-        const el = document.querySelector(`.ticket[data-id="${pill.dataset.id}"]`);
+        let el = document.querySelector(`.ticket[data-id="${pill.dataset.id}"]`);
+        if(!el && activeMember !== 'all'){
+          // 絞り込みで非表示の場合は解除して表示する
+          activeMember = 'all';
+          render();
+          el = document.querySelector(`.ticket[data-id="${pill.dataset.id}"]`);
+        }
         if(el){
           el.scrollIntoView({ behavior:'smooth', block:'center' });
           el.style.boxShadow = '0 0 0 3px var(--member-color)';
@@ -1110,10 +1229,11 @@
     renderCalendar();
   });
 
+  // 属性値の中でも安全に使えるよう引用符もエスケープする
   function escapeHtml(str){
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
   // ---------- Modal ----------
@@ -1145,6 +1265,7 @@
     selectedColor = COLORS[passes.length % COLORS.length];
     renderColorPicker();
     refreshMemberSuggestions();
+    lastFocus = document.activeElement;
     overlay.classList.add('show');
     $('#f-member').focus();
   }
@@ -1164,14 +1285,21 @@
     selectedColor = p.color;
     renderColorPicker();
     refreshMemberSuggestions();
+    lastFocus = document.activeElement;
     overlay.classList.add('show');
+    $('#f-member').focus();
   }
 
   function closeModal(){
     overlay.classList.remove('show');
+    if(lastFocus && document.contains(lastFocus)) lastFocus.focus();
+    lastFocus = null;
   }
 
   function deletePass(id){
+    const p = passes.find(x => x.id === id);
+    if(!p) return;
+    if(!confirm(`${p.member}の定期券（${p.route}）を削除しますか？`)) return;
     passes = passes.filter(p => p.id !== id);
     savePasses();
     render();
@@ -1205,7 +1333,7 @@
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const data = {
-      id: editingId || (Date.now().toString(36) + Math.random().toString(36).slice(2,7)),
+      id: editingId || newId(),
       member: $('#f-member').value.trim(),
       color: selectedColor,
       route: $('#f-route').value.trim(),
@@ -1214,18 +1342,33 @@
       end: $('#f-end').value,
       price: Number($('#f-price').value)
     };
+    if(data.end < data.start){
+      alert('有効期限は使用開始日以降の日付にしてください。');
+      return;
+    }
     if(editingId){
       passes = passes.map(p => p.id === editingId ? data : p);
     }else{
       passes.push(data);
     }
+    // 同じ利用者の色を統一する
+    passes.forEach(p => { if(p.member === data.member) p.color = data.color; });
     savePasses();
     closeModal();
     render();
   });
 
   document.addEventListener('keydown', (e) => {
-    if(e.key === 'Escape' && overlay.classList.contains('show')) closeModal();
+    if(!overlay.classList.contains('show')) return;
+    if(e.key === 'Escape'){ closeModal(); return; }
+    // モーダル内でフォーカスを循環させる
+    if(e.key === 'Tab'){
+      const items = [...overlay.querySelectorAll('input, select, button')].filter(el => !el.disabled);
+      if(items.length === 0) return;
+      const first = items[0], last = items[items.length - 1];
+      if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+      else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+    }
   });
 
   // ---------- Export / Import ----------
@@ -1312,31 +1455,35 @@
       return;
     }
 
-    const valid = incoming.filter(p => p && p.member && p.route && p.start && p.end);
+    // 各項目を検証（不正な色・日付・数値は除外／補正）
+    const valid = incoming.map(sanitizePass).filter(Boolean);
     if(valid.length === 0){
       alert('有効な定期券データが見つかりませんでした。');
       return;
     }
 
-    const mode = confirm(
+    // 追加／置換／中止 の3択（confirmを2段階で使用）
+    const doAdd = confirm(
       `${valid.length}件のデータが見つかりました。\n\n` +
       `「OK」= 現在のデータに追加する\n` +
-      `「キャンセル」= 現在のデータを置き換える`
+      `「キャンセル」= 次の画面で置き換え／中止を選ぶ`
     );
 
-    if(mode){
+    if(doAdd){
       // 追加：同じIDがあれば上書き、なければ追加
       const map = new Map(passes.map(p => [p.id, p]));
-      valid.forEach(p => {
-        if(!p.id) p.id = Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-        map.set(p.id, p);
-      });
+      valid.forEach(p => map.set(p.id, p));
       passes = [...map.values()];
     }else{
-      passes = valid.map(p => ({
-        ...p,
-        id: p.id || (Date.now().toString(36) + Math.random().toString(36).slice(2,7))
-      }));
+      const doReplace = confirm(
+        '現在のデータを削除して、読み込んだデータに置き換えますか？\n' +
+        '（現在のデータは退避されます）\n\n' +
+        '「OK」= 置き換える\n' +
+        '「キャンセル」= インポートを中止'
+      );
+      if(!doReplace) return;
+      backupCurrent();
+      passes = valid;
     }
 
     savePasses();
@@ -1346,9 +1493,10 @@
 
   async function startImport(){
     // PC(Chrome/Edge)で記憶済みフォルダがあれば、そこを開いた状態でファイル選択ダイアログを表示
-    if(dirPickerSupported && ioFolderHandle){
+    if(dirPickerSupported && ioFolderHandle && 'showOpenFilePicker' in window){
       try{
-        const perm = await ioFolderHandle.queryPermission({ mode: 'readwrite' });
+        // 読み込みには読み取り権限だけで足りる
+        const perm = await ioFolderHandle.queryPermission({ mode: 'read' });
         if(perm !== 'granted'){
           setIOFolderUI('pending', ioFolderHandle.name);
         }else{
